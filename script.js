@@ -1,95 +1,123 @@
-body {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-    background-color: #282c34;
-    color: white;
-    flex-direction: column;
-  }
-  .joystick-container {
-    display: flex;
-    justify-content: space-around;
-    width: 80%;
-  }
-  .joystick {
-    width: 150px;
-    height: 150px;
-    background-color: lightgray;
-    border-radius: 50%;
-    position: relative;
-    touch-action: none;
-  }
-  .knob {
-    width: 50px;
-    height: 50px;
-    background-color: darkgray;
-    border-radius: 50%;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-  }
-  .switch-container {
-    margin-top: 20px;
-  }
-  .switch {
-    position: relative;
-    display: inline-block;
-    width: 60px;
-    height: 34px;
-  }
+let joystickState = { leftX: 0, leftY: 0, rightX: 0, rightY: 0, specialAction: false };
+    let lastSentTime = 0;
+    const specialActionSwitch = document.getElementById('special-action-switch');
 
-  .switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: #ccc;
-    -webkit-transition: .4s;
-    transition: .4s;
-    border-radius: 34px;
-  }
+    function scaleValue(val) {
+      return Math.round((val + 1) * 127.5);
+    }
 
-  .slider:before {
-    position: absolute;
-    content: "";
-    height: 26px;
-    width: 26px;
-    left: 4px;
-    bottom: 4px;
-    background-color: white;
-    -webkit-transition: .4s;
-    transition: .4s;
-    border-radius: 50%;
-  }
+    function sendJoystickData() {
+      const now = Date.now();
+      if (now - lastSentTime < 100) return; // Throttle to 100ms
+      lastSentTime = now;
 
-  input:checked + .slider {
-    background-color: #2196F3;
-  }
+      const data = {
+        roll: scaleValue(joystickState.leftX),
+        pitch: scaleValue(joystickState.leftY),
+        yaw: scaleValue(joystickState.rightX),
+        throttle: scaleValue(joystickState.rightY),
+        AUX1: joystickState.specialAction // Include switch state
+      };
 
-  input:focus + .slider {
-    box-shadow: 0 0 1px #2196F3;
-  }
+      console.log("Sending data:", data);
 
-  input:checked + .slider:before {
-    -webkit-transform: translateX(26px);
-    -ms-transform: translateX(26px);
-    transform: translateX(26px);
-  }
+      fetch('http://192.168.5.147/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+      .then(response => response.text())
+      .then(result => console.log("Server response:", result))
+      .catch(error => console.error("Error:", error));
+    }
 
-  /* Rounded sliders */
-  .slider.round {
-    border-radius: 34px;
-  }
+    function setupJoystick(joystickId, knobId, joystickKeyX, joystickKeyY) {
+      const joystick = document.getElementById(joystickId);
+      const knob = document.getElementById(knobId);
+      let active = false; // Track active state *per joystick*
+      let eventType = ''; // Track event type (mouse or touch) *per joystick*
 
-  .slider.round:before {
-    border-radius: 50%;
-  }
+      function startMove(event) {
+        event.preventDefault();
+        active = true;
+        eventType = event.type.startsWith('touch') ? 'touch' : 'mouse';
+        moveKnob(event);
+      }
+
+      function doMove(event) {
+        if (active) {
+          moveKnob(event);
+        }
+      }
+
+      function stopMove() {
+        active = false;
+        knob.style.top = '50%';
+        knob.style.left = '50%';
+        joystickState[joystickKeyX] = 0;
+        joystickState[joystickKeyY] = 0;
+        sendJoystickData(); // Send data immediately on release
+      }
+
+      function getEventCoordinates(event) {
+        if (eventType === 'touch' && event.touches.length > 0) {
+          // Find the touch associated with this joystick
+          for (let i = 0; i < event.touches.length; i++) {
+            const touch = event.touches[i];
+            const target = touch.target; // The element that was touched
+            if (target === joystick || target === knob) {
+              return { clientX: touch.clientX, clientY: touch.clientY };
+            }
+          }
+          // If no matching touch is found, return null
+          return null;
+        } else {
+          return { clientX: event.clientX, clientY: event.clientY };
+        }
+      }
+
+      function moveKnob(event) {
+        const coords = getEventCoordinates(event);
+        if (!coords) return; // Exit if no valid touch
+
+        const rect = joystick.getBoundingClientRect();
+        let x = coords.clientX - rect.left - rect.width / 2;
+        let y = coords.clientY - rect.top - rect.height / 2;
+        let maxDist = rect.width / 2 - 25;
+        let dist = Math.sqrt(x * x + y * y);
+
+        if (dist > maxDist) {
+          x = (x / dist) * maxDist;
+          y = (y / dist) * maxDist;
+        }
+
+        knob.style.left = `${50 + (x / maxDist) * 50}%`;
+        knob.style.top = `${50 + (y / maxDist) * 50}%`;
+
+        joystickState[joystickKeyX] = x / maxDist;
+        joystickState[joystickKeyY] = y / maxDist;
+
+        sendJoystickData(); // Send data immediately on move
+      }
+
+      joystick.addEventListener('mousedown', startMove);
+      joystick.addEventListener('touchstart', startMove, { passive: false });
+
+      document.addEventListener('mousemove', doMove);  // Listen on document
+      document.addEventListener('touchmove', doMove, { passive: false }); // Listen on document
+
+      document.addEventListener('mouseup', stopMove);   // Listen on document
+      document.addEventListener('touchend', stopMove);  // Listen on document
+      document.addEventListener('mouseleave', stopMove); // Listen on document
+    }
+
+    setupJoystick('left-joystick', 'left-knob', 'leftX', 'leftY');
+    setupJoystick('right-joystick', 'right-knob', 'rightX', 'rightY');
+    // setInterval(sendJoystickData, 100); //No longer needed
+
+
+    specialActionSwitch.addEventListener('change', () => {
+      joystickState.specialAction = specialActionSwitch.checked;
+      sendJoystickData();
+    });
+   
